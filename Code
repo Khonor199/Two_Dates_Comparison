@@ -1,0 +1,69 @@
+WITH a as (
+    WITH core as (
+        WITH before AS (
+            SELECT date, offer_id, category_id, supplier_id, catalog_id, price
+            FROM default.price_snapshot
+            WHERE date = today() - 8
+        ),
+        current AS (
+            SELECT date, offer_id, category_id, supplier_id, catalog_id, price
+            FROM default.price_snapshot
+            WHERE date = today() - 1
+        )
+        
+        SELECT
+            b.date AS before_date,
+            c.date AS current_date,
+            b.offer_id,
+            b.category_id,
+            b.supplier_id,
+            b.catalog_id,
+            b.price AS before_price,
+            c.price AS current_price,
+            CASE WHEN b.price != c.price THEN 1 ELSE 0 END counts
+        FROM before b
+        JOIN current c ON b.offer_id = c.offer_id
+    )
+    
+    SELECT 
+        supplier_id, 
+        dictGet('supplier_service_supplier_dict', 'name', supplier_id) as supplier_name,
+        catalog_id,
+        category_id,
+        dictGet('pim_catalog_category_dict', 'name', category_id) as category_name,
+        median()(before_price) AS before_price_50_percentile,
+        median()(current_price) AS current_price_50_percentile,
+        count(*) as all,
+        sum(counts) as counts
+        
+    FROM core
+    WHERE 1=1
+    [[and supplier_id = {{supplier_id}}]]
+    [[and catalog_id = {{catalog_id}}]]
+    group by 1,2,3,4,5
+    order by supplier_id, category_id
+),
+
+final as (
+    select 
+        a.supplier_id, 
+        category_name,
+        avg(a.before_price_50_percentile) "было", 
+        avg(a.current_price_50_percentile) "стало",
+        sum(all) as all,
+        sum(counts) as counts,
+        (avg(a.current_price_50_percentile) / avg(a.before_price_50_percentile)  - 1) * 100 as percent
+    from a
+    group by 1,2
+)
+
+SELECT 
+    supplier_id "ID поставщика", 
+    replace(dictGet('supplier_service_supplier_dict', 'name', supplier_id), 'ОБЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ', 'ООО') AS "Наименование поставщика",
+    sum(all) as "Офферов",
+    sum(counts) as "Изменилось в цене",
+    avg(percent) "Средняя дельта цен по категориям, %"
+FROM final
+GROUP BY 1
+HAVING avg(percent) != 0
+order by avg(percent) desc
